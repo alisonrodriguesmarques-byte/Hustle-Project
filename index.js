@@ -1,53 +1,343 @@
-import express from "express";
-import cors from "cors";
-import { createServer } from "node:http";
-import { Server } from "socket.io";
-import { randomBytes } from "node:crypto";
+const canvas = document.querySelector('canvas')
+const c = canvas.getContext('2d')
 
-const app=express();
-const httpServer=createServer(app);
-const allowed=process.env.CLIENT_ORIGIN||"http://localhost:5173";
-app.use(cors({origin:allowed}));
-app.use(express.json({limit:"20kb"}));
-const io=new Server(httpServer,{cors:{origin:allowed,methods:["GET","POST"]}});
-const rooms=new Map();
-app.get("/api/health",(_req,res)=>res.json({ok:true,service:"hustle-arena-server"}));
-app.get("/api/rooms",(_req,res)=>res.json([...rooms.values()].map(r=>({code:r.code,players:r.players.length,createdAt:r.createdAt}))));
-function roomCode(){let code;do{code=randomBytes(3).toString("hex").toUpperCase()}while(rooms.has(code));return code;}
-io.on("connection",socket=>{
-  socket.on("room:create",({name="Player"}={})=>{
-    const code=roomCode(),room={code,createdAt:Date.now(),players:[{id:socket.id,name:String(name).slice(0,20)}]};
-    rooms.set(code,room);socket.join(code);socket.data.room=code;
-    socket.emit("room:created",{code,players:1});io.emit("rooms:update");
-  });
-  socket.on("room:join",({code,name="Player"}={})=>{
-    const key=String(code||"").toUpperCase(),room=rooms.get(key);
-    if(!room){socket.emit("room:error",{message:"Sala não encontrada."});return;}
-    if(room.players.length>=2){socket.emit("room:error",{message:"Essa sala já está cheia."});return;}
-    if(room.players.some(p=>p.id===socket.id))return;
-    room.players.push({id:socket.id,name:String(name).slice(0,20)});socket.join(key);socket.data.room=key;
-    io.to(key).emit("room:joined",{code:key,players:room.players.length,names:room.players.map(p=>p.name)});io.emit("rooms:update");
-  });
-  socket.on("chat:send",({code,message}={})=>{
-    const key=String(code||socket.data.room||"").toUpperCase(),room=rooms.get(key);
-    if(!room||!room.players.some(p=>p.id===socket.id)||typeof message!=="string")return;
-    const clean=message.trim().slice(0,250);if(!clean)return;
-    const player=room.players.find(p=>p.id===socket.id);
-    io.to(key).emit("chat:message",{name:player.name,message:clean,at:Date.now()});
-  });
-  socket.on("match:decision",({code,turn,action}={})=>{
-    const room=rooms.get(String(code||"").toUpperCase());
-    if(!room||!room.players.some(p=>p.id===socket.id)||!Number.isInteger(turn)||turn<1||typeof action!=="object")return;
-    // Relay only validated, bounded decisions; authoritative combat is not yet implemented.
-    io.to(room.code).emit("match:decision",{player:socket.id,turn,action:JSON.stringify(action).slice(0,1000)});
-  });
-  socket.on("disconnect",()=>{
-    const code=socket.data.room,room=rooms.get(code);if(!room)return;
-    room.players=room.players.filter(p=>p.id!==socket.id);
-    if(!room.players.length)rooms.delete(code);
-    else io.to(code).emit("room:joined",{code,players:room.players.length,names:room.players.map(p=>p.name)});
-    io.emit("rooms:update");
-  });
-});
-const port=Number(process.env.PORT)||3001;
-httpServer.listen(port,"0.0.0.0",()=>console.log(`Hustle//Arena server running on http://localhost:${port}`));
+canvas.width = 1024
+canvas.height = 576
+
+c.fillRect(0, 0, canvas.width, canvas.height)
+
+const GRAVITY = 2520
+const X_VELOCITY = 400
+const JUMP_POWER = 1200
+
+const background = new Sprite({
+  position: {
+    x: 0,
+    y: 0
+  },
+  imageSrc: './img/background.png'
+})
+
+const shop = new Sprite({
+  position: {
+    x: 600,
+    y: 128
+  },
+  imageSrc: './img/shop.png',
+  scale: 2.75,
+  framesMax: 6
+})
+
+const player = new Fighter({
+  position: {
+    x: 0,
+    y: 0
+  },
+  velocity: {
+    x: 0,
+    y: 0
+  },
+  offset: {
+    x: 0,
+    y: 0
+  },
+  imageSrc: './img/samuraiMack/Idle.png',
+  framesMax: 8,
+  scale: 2.5,
+  offset: {
+    x: 215,
+    y: 157
+  },
+  sprites: {
+    idle: {
+      imageSrc: './img/samuraiMack/Idle.png',
+      framesMax: 8
+    },
+    run: {
+      imageSrc: './img/samuraiMack/Run.png',
+      framesMax: 8
+    },
+    jump: {
+      imageSrc: './img/samuraiMack/Jump.png',
+      framesMax: 2
+    },
+    fall: {
+      imageSrc: './img/samuraiMack/Fall.png',
+      framesMax: 2
+    },
+    attack1: {
+      imageSrc: './img/samuraiMack/Attack1.png',
+      framesMax: 6
+    },
+    takeHit: {
+      imageSrc: './img/samuraiMack/Take Hit - white silhouette.png',
+      framesMax: 4
+    },
+    death: {
+      imageSrc: './img/samuraiMack/Death.png',
+      framesMax: 6
+    }
+  },
+  attackBox: {
+    offset: {
+      x: 100,
+      y: 50
+    },
+    width: 160,
+    height: 50
+  }
+})
+
+const enemy = new Fighter({
+  position: {
+    x: 400,
+    y: 100
+  },
+  velocity: {
+    x: 0,
+    y: 0
+  },
+  color: 'blue',
+  offset: {
+    x: -50,
+    y: 0
+  },
+  imageSrc: './img/kenji/Idle.png',
+  framesMax: 4,
+  scale: 2.5,
+  offset: {
+    x: 215,
+    y: 167
+  },
+  sprites: {
+    idle: {
+      imageSrc: './img/kenji/Idle.png',
+      framesMax: 4
+    },
+    run: {
+      imageSrc: './img/kenji/Run.png',
+      framesMax: 8
+    },
+    jump: {
+      imageSrc: './img/kenji/Jump.png',
+      framesMax: 2
+    },
+    fall: {
+      imageSrc: './img/kenji/Fall.png',
+      framesMax: 2
+    },
+    attack1: {
+      imageSrc: './img/kenji/Attack1.png',
+      framesMax: 4
+    },
+    takeHit: {
+      imageSrc: './img/kenji/Take hit.png',
+      framesMax: 3
+    },
+    death: {
+      imageSrc: './img/kenji/Death.png',
+      framesMax: 7
+    }
+  },
+  attackBox: {
+    offset: {
+      x: -170,
+      y: 50
+    },
+    width: 170,
+    height: 50
+  }
+})
+
+console.log(player)
+
+const keys = {
+  a: {
+    pressed: false
+  },
+  d: {
+    pressed: false
+  },
+  ArrowRight: {
+    pressed: false
+  },
+  ArrowLeft: {
+    pressed: false
+  }
+}
+
+decreaseTimer()
+
+let lastTime = performance.now()
+function animate() {
+  window.requestAnimationFrame(animate)
+
+  const currentTime = performance.now()
+  const deltaTime = Math.min((currentTime - lastTime) / 1000, 0.1)
+  lastTime = currentTime
+
+  c.fillStyle = 'black'
+  c.fillRect(0, 0, canvas.width, canvas.height)
+  background.update(deltaTime)
+  shop.update(deltaTime)
+  c.fillStyle = 'rgba(255, 255, 255, 0.15)'
+  c.fillRect(0, 0, canvas.width, canvas.height)
+  player.update(deltaTime)
+  enemy.update(deltaTime)
+
+  player.velocity.x = 0
+  enemy.velocity.x = 0
+
+  // player movement
+
+  if (keys.a.pressed && player.lastKey === 'a') {
+    player.velocity.x = -X_VELOCITY
+    player.switchSprite('run')
+  } else if (keys.d.pressed && player.lastKey === 'd') {
+    player.velocity.x = X_VELOCITY
+    player.switchSprite('run')
+  } else {
+    player.switchSprite('idle')
+  }
+
+  // jumping
+  if (player.velocity.y < 0) {
+    player.switchSprite('jump')
+  } else if (player.velocity.y > 0) {
+    player.switchSprite('fall')
+  }
+
+  // Enemy movement
+  if (keys.ArrowLeft.pressed && enemy.lastKey === 'ArrowLeft') {
+    enemy.velocity.x = -X_VELOCITY
+    enemy.switchSprite('run')
+  } else if (keys.ArrowRight.pressed && enemy.lastKey === 'ArrowRight') {
+    enemy.velocity.x = X_VELOCITY
+    enemy.switchSprite('run')
+  } else {
+    enemy.switchSprite('idle')
+  }
+
+  // jumping
+  if (enemy.velocity.y < 0) {
+    enemy.switchSprite('jump')
+  } else if (enemy.velocity.y > 0) {
+    enemy.switchSprite('fall')
+  }
+
+  // detect for collision & enemy gets hit
+  if (
+    rectangularCollision({
+      rectangle1: player,
+      rectangle2: enemy
+    }) &&
+    player.isAttacking &&
+    player.framesCurrent === 4
+  ) {
+    enemy.takeHit()
+    player.isAttacking = false
+
+    gsap.to('#enemyHealth', {
+      width: enemy.health + '%'
+    })
+  }
+
+  // if player misses
+  if (player.isAttacking && player.framesCurrent === 4) {
+    player.isAttacking = false
+  }
+
+  // this is where our player gets hit
+  if (
+    rectangularCollision({
+      rectangle1: enemy,
+      rectangle2: player
+    }) &&
+    enemy.isAttacking &&
+    enemy.framesCurrent === 2
+  ) {
+    player.takeHit()
+    enemy.isAttacking = false
+
+    gsap.to('#playerHealth', {
+      width: player.health + '%'
+    })
+  }
+
+  // if player misses
+  if (enemy.isAttacking && enemy.framesCurrent === 2) {
+    enemy.isAttacking = false
+  }
+
+  // end game based on health
+  if (enemy.health <= 0 || player.health <= 0) {
+    determineWinner({ player, enemy, timerId })
+  }
+}
+
+animate()
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp')
+    event.preventDefault()
+
+  if (!player.dead) {
+    switch (event.key) {
+      case 'd':
+        keys.d.pressed = true
+        player.lastKey = 'd'
+        break
+      case 'a':
+        keys.a.pressed = true
+        player.lastKey = 'a'
+        break
+      case 'w':
+        player.velocity.y = -JUMP_POWER
+        break
+      case ' ':
+        player.attack()
+        break
+    }
+  }
+
+  if (!enemy.dead) {
+    switch (event.key) {
+      case 'ArrowRight':
+        keys.ArrowRight.pressed = true
+        enemy.lastKey = 'ArrowRight'
+        break
+      case 'ArrowLeft':
+        keys.ArrowLeft.pressed = true
+        enemy.lastKey = 'ArrowLeft'
+        break
+      case 'ArrowUp':
+        enemy.velocity.y = -JUMP_POWER
+        break
+      case 'ArrowDown':
+        enemy.attack()
+
+        break
+    }
+  }
+})
+
+window.addEventListener('keyup', (event) => {
+  switch (event.key) {
+    case 'd':
+      keys.d.pressed = false
+      break
+    case 'a':
+      keys.a.pressed = false
+      break
+  }
+
+  // enemy keys
+  switch (event.key) {
+    case 'ArrowRight':
+      keys.ArrowRight.pressed = false
+      break
+    case 'ArrowLeft':
+      keys.ArrowLeft.pressed = false
+      break
+  }
+})
